@@ -6,6 +6,8 @@
 
 <p align="center">
   <strong>Shared persistent memory for AI coding agents, synced in real-time.</strong>
+  <br />
+  <sub>Give your AI agents a shared brain — Claude Code, Cursor, Codex, Windsurf, and any MCP-compatible tool can read and write memories that persist across sessions, sync across agents, and stay fresh automatically. Built with Next.js 16, Neon Postgres, and PowerSync for local-first, offline-capable, real-time collaboration.</sub>
 </p>
 
 <p align="center">
@@ -374,16 +376,19 @@ Go to **Windsurf Settings > MCP** and add:
 
 ### Codex (OpenAI)
 
-Codex doesn't support MCP yet — use the REST API directly. Add to your Codex instructions:
+Add to your `codex.md` or project MCP config:
 
-```
-Before starting, fetch shared context:
-curl http://localhost:3000/api/memories?project=PROJECT_NAME
-
-After completing work, save what you learned:
-curl -X POST http://localhost:3000/api/memories \
-  -H "Content-Type: application/json" \
-  -d '{"content": "WHAT_YOU_LEARNED", "source": "codex", "type": "learning", "project": "PROJECT_NAME"}'
+```json
+{
+  "mcpServers": {
+    "syncmind": {
+      "type": "stdio",
+      "command": "syncmind-mcp",
+      "args": [],
+      "env": { "SYNCMIND_URL": "http://localhost:3000" }
+    }
+  }
+}
 ```
 
 ### Any MCP-Compatible Tool
