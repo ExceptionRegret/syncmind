@@ -1,0 +1,15 @@
+{
+  "name": "syncmind-mcp",
+  "version": "2.0.0",
+  "description": "MCP server for SyncMind — shared persistent memory for AI coding agents",
+  "bin": {
+    "syncmind-mcp": "./index.js",
+    "syncmind": "./cli.js"
+  },
+  "keywords": ["mcp", "ai", "memory", "claude-code", "codex", "cursor", "powersync"],
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.27.0",
+    "zod": "^3.25.0"
+  }
+}
