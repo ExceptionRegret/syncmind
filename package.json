@@ -1,6 +1,32 @@
 {
   "name": "syncmind",
   "version": "0.1.0",
+  "description": "Shared persistent memory for AI coding agents, synced in real-time across Claude Code, Cursor, Codex, Windsurf, and any MCP-compatible tool.",
+  "author": "ExceptionRegret <exceptionregret@gmail.com>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ExceptionRegret/syncmind.git"
+  },
+  "bugs": {
+    "url": "https://github.com/ExceptionRegret/syncmind/issues",
+    "email": "exceptionregret@gmail.com"
+  },
+  "homepage": "https://github.com/ExceptionRegret/syncmind#readme",
+  "keywords": [
+    "ai",
+    "memory",
+    "mcp",
+    "claude-code",
+    "cursor",
+    "codex",
+    "windsurf",
+    "agent",
+    "sync",
+    "powersync",
+    "neon",
+    "nextjs"
+  ],
   "private": true,
   "scripts": {
     "dev": "next dev",
