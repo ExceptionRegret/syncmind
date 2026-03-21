@@ -35,10 +35,8 @@ https://github.com/user-attachments/assets/syncmind-demo.mp4
 > **Video:** Place your demo video at `public/demo.mp4` (or upload to GitHub and paste the link above).
 
 <p align="center">
-  <img src="public/screenshot.png" alt="SyncMind Dashboard" width="800" />
+  <img src="assets/dashboard.png" alt="SyncMind Dashboard" width="800" />
 </p>
-
-> **Screenshot:** Take a screenshot of your dashboard and save it as `public/screenshot.png`.
 
 ---
 
