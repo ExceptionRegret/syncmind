@@ -27,6 +27,7 @@
   <img src="https://img.shields.io/badge/PowerSync-local--first-blue?logo=data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjAiIGhlaWdodD0iMjAiPjwvc3ZnPg==" alt="PowerSync" />
   <img src="https://img.shields.io/badge/Neon-Postgres-green?logo=postgresql" alt="Neon Postgres" />
   <img src="https://img.shields.io/badge/MCP-compatible-violet" alt="MCP Compatible" />
+  [![Sponsor](https://img.shields.io/badge/Sponsor-%E2%9D%A4-ea4aaa?logo=github-sponsors)](https://github.com/sponsors/ExceptionRegret)
 </p>
 
 ---
