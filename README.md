@@ -34,13 +34,11 @@
 ## Demo
 
 <p align="center">
-  <video src="https://github.com/ExceptionRegret/syncmind/raw/master/assets/video.mp4" width="800" controls>
-    Your browser does not support the video tag.
-  </video>
-</p>
-
-<p align="center">
-  <img src="assets/dashboard.png" alt="SyncMind Dashboard" width="800" />
+  <a href="https://github.com/ExceptionRegret/syncmind/raw/master/assets/video.mp4">
+    <img src="assets/dashboard.png" alt="Watch Demo Video — click to download" width="800" />
+  </a>
+  <br />
+  <sub>Click the image above to watch the demo video</sub>
 </p>
 
 ---
