@@ -73,6 +73,8 @@ Git hooks    ─── auto-captures learnings from commits/CI/tests       ─�
 - **Scoped visibility** — `project` (default), `team`, or `global`. Global memories appear in all project queries.
 - **Auto-capture** — 13 source types: git commits, diffs, CI logs, PR reviews, terminal errors, lint output, test results, deploy logs, chat threads, docs, browser console, dependency audits, and freeform text.
 - **SyncMind CLI** — `syncmind` command for writing, searching, capturing, and managing from the terminal.
+- **Exit Gate** — Agents are _required_ to call `export_session` before ending. They dump their full session context — decisions, bugs, patterns, next steps — not thin one-liners. `syncmind hooks` installs this into CLAUDE.md, .cursor/rules, AGENTS.md, and .windsurfrules automatically.
+- **Rich session capture** — `syncmind session end` captures 8 signals: git commits, diffs, uncommitted files (staged/unstaged), branch status, recently modified files, dependency changes, error logs, and filesystem changes. Works on Windows + Mac + Linux.
 - **Auto-capture hooks** — Git post-commit, pre-push, Claude Code session end, VS Code folder close, terminal exit.
 - **MCP compatible** — Works with Claude Code, Cursor, VS Code Copilot, Windsurf, and any MCP-compatible tool.
 - **Offline support** — Dashboard works offline via local SQLite, syncs when reconnected.
@@ -232,6 +234,7 @@ syncmind status    # checks server, MCP connection, global install
 |------|-------------|
 | `read_memories` | Search & filter by source, project, type, scope, confidence. Returns freshness score. |
 | `write_memory` | Save with auto-dedup, confidence level, scope. Reports merge on duplicates. |
+| **`export_session`** | **EXIT GATE** — Agents dump full session context before ending: summary, decisions, bugs, patterns, learnings, files touched, next steps. Creates rich composite + individual typed memories. |
 | `bump_memory` | Explicitly mark a memory as used — boosts its freshness score. |
 | `delete_memory` | Remove a memory by ID. |
 
@@ -262,7 +265,8 @@ npm test | syncmind capture -t test --stdin   # pipe anything
 
 # Session Lifecycle
 syncmind session start        # show recent memories for context
-syncmind session end          # capture commits, diffs, uncommitted work
+syncmind session end          # full context capture (commits, diffs, deps, branch, files)
+syncmind session end -s cursor -p myapp  # explicit source + project
 
 # Maintenance
 syncmind restart              # re-link MCP + re-register with IDEs
@@ -279,7 +283,7 @@ Run `syncmind hooks` to set up automatic memory capture:
 |------|---------|-----------------|
 | Git post-commit | Every commit | Commit messages parsed by type |
 | Git pre-push | Before push | Session state snapshot |
-| Claude Code Stop | Session exit | Last hour's commits, diffs, uncommitted files |
+| Claude Code Stop | Session exit | Commits, diffs, deps, branch, files, errors |
 | VS Code task | Folder close | Session end capture |
 | Terminal trap | Shell exit | Session end capture |
 
@@ -477,6 +481,29 @@ curl -X POST http://localhost:3000/api/memories/auto \
 
 **`source_type`:** `git-hook`, `git-diff`, `ci`, `pr-review`, `terminal`, `lint`, `test`, `deploy`, `chat`, `doc`, `browser`, `deps`, `custom`
 
+### Export Session (Exit Gate)
+
+```bash
+curl -X POST http://localhost:3000/api/memories/export \
+  -H "Content-Type: application/json" \
+  -d '{
+    "source": "claude-code",
+    "project": "my-app",
+    "summary": "Implemented auth middleware with JWT validation...",
+    "decisions": ["Used JWT over sessions because app is stateless"],
+    "bugs": ["CORS error: missing OPTIONS handler in route.ts"],
+    "patterns": ["Fire-and-forget UPDATE for read tracking"],
+    "learnings": ["Next.js 16 requires async cookies()"],
+    "files_touched": ["app/api/auth/route.ts"],
+    "next_steps": ["Add rate limiting"]
+  }'
+```
+
+**Required:** `source`, `summary` (min 50 chars)
+**Optional:** `project`, `decisions`, `bugs`, `patterns`, `learnings`, `files_touched`, `next_steps`, `tags`, `scope`
+
+Creates a rich composite "context" memory + individual typed memories for each decision/bug/pattern/learning.
+
 ### Delete a Memory
 
 ```bash
@@ -518,8 +545,9 @@ syncmind/
 │   │   ├── memories/
 │   │   │   ├── route.ts         # GET/POST/DELETE memories (freshness, dedup)
 │   │   │   ├── bump/route.ts    # POST bump usage count
-│   │   │   └── auto/route.ts    # POST auto-capture (13 source types)
-│   │   └── sync/route.ts        # PowerSync upload handler
+│   │   │   ├── auto/route.ts    # POST auto-capture (13 source types)
+│   │   │   └── export/route.ts  # POST session export (Exit Gate)
+│   │   └── sync/route.ts        # PowerSync upload + activity feed
 │   ├── layout.tsx               # Root layout with Geist fonts
 │   ├── page.tsx                 # Dashboard page
 │   └── globals.css              # Global styles
@@ -541,8 +569,8 @@ syncmind/
 │       ├── schema.ts            # PowerSync table definitions
 │       └── connector.ts         # PowerSync backend connector
 ├── mcp-server/
-│   ├── index.js                 # MCP server (4 tools, freshness, dedup)
-│   ├── cli.js                   # SyncMind CLI (9 commands, auto-capture)
+│   ├── index.js                 # MCP server (5 tools: read, write, export, bump, delete)
+│   ├── cli.js                   # SyncMind CLI (9 commands + Exit Gate + rich session capture)
 │   └── package.json             # npm package (syncmind + syncmind-mcp globals)
 ├── assets/
 │   ├── dashboard.png            # Dashboard screenshot

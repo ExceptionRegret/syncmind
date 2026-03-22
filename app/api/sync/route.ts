@@ -7,6 +7,28 @@ function castPlaceholder(col: string, idx: number): string {
   return TIMESTAMP_COLUMNS.has(col) ? `$${idx}::timestamptz` : `$${idx}`;
 }
 
+// GET /api/sync?action=activities — fetch recent activity log
+export async function GET(request: Request) {
+  const url = new URL(request.url);
+  const action = url.searchParams.get("action");
+
+  if (action === "activities") {
+    try {
+      const limit = Math.min(parseInt(url.searchParams.get("limit") || "30"), 100);
+      const activities = await query(
+        "SELECT * FROM activity_log ORDER BY created_at DESC LIMIT $1",
+        [limit]
+      );
+      return NextResponse.json({ activities });
+    } catch (error) {
+      console.error("GET /api/sync activities error:", error);
+      return NextResponse.json({ error: String(error) }, { status: 500 });
+    }
+  }
+
+  return NextResponse.json({ error: "Unknown action" }, { status: 400 });
+}
+
 export async function POST(request: Request) {
   const { table, op, record } = await request.json();
 

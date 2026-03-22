@@ -1,6 +1,6 @@
 {
   "name": "syncmind-mcp",
-  "version": "2.0.0",
+  "version": "2.2.0",
   "description": "MCP server for SyncMind — shared persistent memory for AI coding agents",
   "bin": {
     "syncmind-mcp": "./index.js",

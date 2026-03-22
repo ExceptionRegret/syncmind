@@ -293,16 +293,53 @@ async function cmdStatus() {
 // ── restart ─────────────────────────────────────────────────────────
 async function cmdRestart(args) {
   console.log();
-  log("Restarting SyncMind...");
+  log("Restarting SyncMind MCP...");
 
-  // Re-link to pick up code changes
-  log("Re-linking MCP server...");
-  try {
-    execSync("npm install", { cwd: MCP_DIR, stdio: "pipe" });
-    execSync("npm link", { cwd: MCP_DIR, stdio: "pipe" });
-    ok("MCP server re-linked");
-  } catch {
-    warn("npm link failed — MCP will use absolute path");
+  const skipLink = args.includes("--no-link");
+  const restartDev = args.includes("--dev") || args.includes("-d");
+
+  // Only re-link if needed (skip if --no-link or if deps haven't changed)
+  // This avoids disrupting the running Next.js dashboard
+  if (!skipLink) {
+    log("Checking MCP dependencies...");
+    const lockFile = path.join(MCP_DIR, "node_modules", ".package-lock.json");
+    const pkgFile = path.join(MCP_DIR, "package.json");
+    let needsInstall = true;
+    try {
+      if (fs.existsSync(lockFile)) {
+        const lockTime = fs.statSync(lockFile).mtimeMs;
+        const pkgTime = fs.statSync(pkgFile).mtimeMs;
+        needsInstall = pkgTime > lockTime;
+      }
+    } catch {}
+
+    if (needsInstall) {
+      log("Installing MCP dependencies...");
+      try {
+        execSync("npm install --prefer-offline", { cwd: MCP_DIR, stdio: "pipe" });
+        ok("Dependencies installed");
+      } catch {
+        warn("npm install failed — continuing with existing deps");
+      }
+    } else {
+      ok("Dependencies up to date — skipping install");
+    }
+
+    // npm link — only if not already linked
+    const alreadyLinked = hasBin("syncmind-mcp");
+    if (!alreadyLinked) {
+      log("Linking globally...");
+      try {
+        execSync("npm link", { cwd: MCP_DIR, stdio: "pipe" });
+        ok("Linked globally");
+      } catch {
+        warn("npm link failed — will use absolute path for MCP");
+      }
+    } else {
+      ok("Already linked globally — skipping npm link");
+    }
+  } else {
+    ok("Skipping npm link (--no-link)");
   }
 
   // Re-register with Claude Code (picks up new tools, new code)
@@ -322,19 +359,18 @@ async function cmdRestart(args) {
     }
   }
 
-  // Check if Next.js dev server needs restart
-  const restartDev = args.includes("--dev") || args.includes("-d");
+  // Restart dev server only if explicitly requested
   if (restartDev) {
     log("Restarting Next.js dev server...");
-    // Kill existing dev server
     try {
       if (process.platform === "win32") {
+        // Find and kill only the next dev process, not all node.exe
+        execSync('for /f "tokens=2" %a in (\'tasklist /fi "IMAGENAME eq node.exe" /fo list ^| findstr PID\') do @echo %a', { stdio: "ignore" });
         execSync('taskkill /f /im node.exe /fi "WINDOWTITLE eq next*" 2>nul', { stdio: "ignore" });
       } else {
         execSync("pkill -f 'next dev' 2>/dev/null", { stdio: "ignore" });
       }
     } catch {}
-    // Start new dev server in background
     const child = spawn("npm", ["run", "dev"], {
       cwd: SYNCMIND_ROOT,
       detached: true,
@@ -347,8 +383,8 @@ async function cmdRestart(args) {
 
   ok("Restart complete");
   console.log();
-  console.log(`  ${C.dim}Note: If you have an active Claude Code session, restart it or${C.reset}`);
-  console.log(`  ${C.dim}type /mcp to reconnect to the updated MCP server.${C.reset}`);
+  console.log(`  ${C.dim}Dashboard not affected — no need to restart if already running.${C.reset}`);
+  console.log(`  ${C.dim}In Claude Code: type /mcp to reconnect to updated MCP.${C.reset}`);
   console.log();
 }
 
@@ -506,28 +542,40 @@ async function cmdSession(args) {
   if (!running) return; // silently skip if server is down
 
   let project = null;
+  let source = null;
   for (let i = 1; i < args.length; i++) {
     if ((args[i] === "--project" || args[i] === "-p") && args[i + 1]) project = args[++i];
+    if ((args[i] === "--source" || args[i] === "-s") && args[i + 1]) source = args[++i];
   }
 
-  // Auto-detect project
+  // Auto-detect project from git or cwd
   if (!project) {
     try {
-      const remote = execSync("git remote get-url origin 2>/dev/null", { encoding: "utf8" }).trim();
-      project = remote.split("/").pop().replace(/\.git$/, "");
-    } catch {
+      const remote = execSync("git remote get-url origin 2>/dev/null", { encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] }).trim();
+      if (remote) project = remote.split("/").pop().replace(/\.git$/, "");
+    } catch {}
+    if (!project) {
+      try {
+        const toplevel = execSync("git rev-parse --show-toplevel 2>/dev/null", { encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] }).trim();
+        if (toplevel) project = path.basename(toplevel);
+      } catch {}
+    }
+    if (!project) {
       try { project = path.basename(process.cwd()); } catch {}
     }
   }
 
-  // Detect IDE/tool
-  const source =
-    process.env.SYNCMIND_SOURCE ||
-    (process.env.CURSOR_TRACE_ID ? "cursor" : null) ||
-    (process.env.CODEX_ENV ? "codex" : null) ||
-    (process.env.TERM_PROGRAM === "vscode" ? "vscode" : null) ||
-    (process.env.CLAUDE_CODE ? "claude-code" : null) ||
-    "cli";
+  // Detect IDE/tool from flag, env, or fallback
+  if (!source) {
+    source =
+      process.env.SYNCMIND_SOURCE ||
+      (process.env.CURSOR_TRACE_ID ? "cursor" : null) ||
+      (process.env.CODEX_ENV ? "codex" : null) ||
+      (process.env.TERM_PROGRAM === "vscode" ? "vscode" : null) ||
+      (process.env.CLAUDE_CODE ? "claude-code" : null) ||
+      (process.env.TERM_PROGRAM === "Claude" ? "claude-code" : null) ||
+      "cli";
+  }
 
   if (action === "start") {
     // On session start: read recent memories to prime the agent
@@ -546,57 +594,194 @@ async function cmdSession(args) {
     } catch {}
     console.log();
   } else if (action === "end") {
-    // On session end: auto-capture recent git commits made during this session
+    // On session end: build a rich session context from all available signals
     console.log();
-    log(`Session ending — auto-capturing from ${C.bold}${source}${C.reset}...`);
+    log(`Session ending — capturing full context from ${C.bold}${source}${C.reset}...`);
 
     const captured = [];
+    const sessionParts = []; // Build a rich session summary
 
-    // 1. Recent git commits (last hour)
+    // Helper: run git command safely (works on Windows + Unix)
+    function gitExec(cmd) {
+      try {
+        return execSync(cmd, { encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] }).trim();
+      } catch { return ""; }
+    }
+
+    // Helper: run any command safely
+    function safeExec(cmd, opts = {}) {
+      try {
+        return execSync(cmd, { encoding: "utf8", stdio: ["pipe", "pipe", "pipe"], timeout: 10000, ...opts }).trim();
+      } catch { return ""; }
+    }
+
+    // Check if we're in a git repo at all
+    const inGitRepo = gitExec("git rev-parse --is-inside-work-tree") === "true";
+
+    if (inGitRepo) {
+      // 1. Recent git commits (last 2 hours for longer sessions)
+      try {
+        const since = new Date(Date.now() - 7200000).toISOString();
+        const commits = gitExec(`git log --since="${since}" --format="%H|%s|%an" --no-merges`);
+        if (commits && commits.length > 5) {
+          const commitLines = commits.split("\n").filter(Boolean);
+          const commitMessages = commitLines.map((l) => l.split("|").slice(1).join("|"));
+
+          // Send raw commit messages for extraction
+          const res = await httpFetch(`${url}/api/memories/auto`, {
+            method: "POST",
+            body: JSON.stringify({ text: commitMessages.join("\n"), source_type: "git-hook", project }),
+          });
+          if (res.ok) captured.push(`commits: ${res.json.saved || 0} new`);
+
+          sessionParts.push(`Commits (${commitLines.length}): ${commitMessages.slice(0, 5).join("; ")}`);
+        }
+      } catch {}
+
+      // 2. Full diff of recent changes (actual code changes, not just stats)
+      try {
+        const diffStat = gitExec("git diff --stat HEAD~5 2>/dev/null") || gitExec("git diff --stat");
+        const diffNames = gitExec("git diff --name-only HEAD~5 2>/dev/null") || gitExec("git diff --name-only");
+        if (diffStat && diffStat.length > 10) {
+          const res = await httpFetch(`${url}/api/memories/auto`, {
+            method: "POST",
+            body: JSON.stringify({ text: diffStat, source_type: "git-diff", project }),
+          });
+          if (res.ok) captured.push(`diff: ${res.json.saved || 0} new`);
+        }
+        if (diffNames) {
+          const files = diffNames.split("\n").filter(Boolean);
+          sessionParts.push(`Files changed (${files.length}): ${files.slice(0, 15).join(", ")}`);
+        }
+      } catch {}
+
+      // 3. Uncommitted changes (staged + unstaged)
+      try {
+        const status = gitExec("git status --short");
+        if (status) {
+          const files = status.split("\n").map((l) => l.trim()).filter(Boolean);
+          const staged = files.filter((f) => /^[MADRCU]/.test(f));
+          const unstaged = files.filter((f) => /^.[MADRCU?]/.test(f));
+
+          const text = [
+            `Session ended with ${files.length} uncommitted changes:`,
+            staged.length > 0 ? `Staged (${staged.length}): ${staged.slice(0, 10).map((f) => f.slice(3)).join(", ")}` : null,
+            unstaged.length > 0 ? `Unstaged (${unstaged.length}): ${unstaged.slice(0, 10).map((f) => f.slice(3)).join(", ")}` : null,
+          ].filter(Boolean).join("\n");
+
+          const res = await httpFetch(`${url}/api/memories/auto`, {
+            method: "POST",
+            body: JSON.stringify({ text, source_type: "git-diff", project }),
+          });
+          if (res.ok) captured.push(`uncommitted: ${res.json.saved || 0} new`);
+          sessionParts.push(`Uncommitted: ${files.length} files (${staged.length} staged, ${unstaged.length} unstaged)`);
+        }
+      } catch {}
+
+      // 4. Branch info — what branch, ahead/behind status
+      try {
+        const branch = gitExec("git branch --show-current");
+        const tracking = gitExec("git rev-list --left-right --count HEAD...@{upstream}");
+        if (branch) {
+          let branchInfo = `Branch: ${branch}`;
+          if (tracking) {
+            const [ahead, behind] = tracking.split(/\s+/).map(Number);
+            if (ahead > 0 || behind > 0) branchInfo += ` (${ahead} ahead, ${behind} behind remote)`;
+          }
+          sessionParts.push(branchInfo);
+        }
+      } catch {}
+
+      // 5. Recently modified files (filesystem level, catches non-git changes)
+      try {
+        const recentFiles = safeExec(
+          process.platform === "win32"
+            ? `powershell -Command "Get-ChildItem -Recurse -File -Exclude node_modules,*.git* | Where-Object {$_.LastWriteTime -gt (Get-Date).AddHours(-2) -and $_.FullName -notmatch '[\\\\/](\\.next|dist|build|coverage|__pycache__|node_modules)[\\\\/]'} | Select-Object -ExpandProperty FullName -First 20"`
+            : `find . \\( -name node_modules -o -name .git -o -name .next -o -name dist -o -name build -o -name coverage \\) -prune -o -type f -mmin -120 -print 2>/dev/null | head -20`
+        );
+        if (recentFiles) {
+          const files = recentFiles.split("\n").filter(Boolean);
+          if (files.length > 0) {
+            sessionParts.push(`Recently modified (${files.length}): ${files.slice(0, 10).map((f) => path.basename(f)).join(", ")}`);
+          }
+        }
+      } catch {}
+    } else {
+      warn("Not in a git repo — using filesystem-only capture");
+
+      // Still try to capture recently modified files even without git
+      try {
+        const recentFiles = safeExec(
+          process.platform === "win32"
+            ? `powershell -Command "Get-ChildItem -Recurse -File -Exclude node_modules,*.git* | Where-Object {$_.LastWriteTime -gt (Get-Date).AddHours(-2) -and $_.FullName -notmatch '[\\\\/](\\.next|dist|build|coverage|__pycache__|node_modules)[\\\\/]'} | Select-Object -ExpandProperty FullName -First 20"`
+            : `find . \\( -name node_modules -o -name .git -o -name .next -o -name dist -o -name build -o -name coverage \\) -prune -o -type f -mmin -120 -print 2>/dev/null | head -20`
+        );
+        if (recentFiles) {
+          const files = recentFiles.split("\n").filter(Boolean);
+          if (files.length > 0) {
+            sessionParts.push(`Recently modified: ${files.slice(0, 15).map((f) => path.basename(f)).join(", ")}`);
+            const text = `Files modified in session:\n${files.slice(0, 15).join("\n")}`;
+            const res = await httpFetch(`${url}/api/memories/auto`, {
+              method: "POST",
+              body: JSON.stringify({ text, source_type: "custom", project }),
+            });
+            if (res.ok) captured.push(`files: ${res.json.saved || 0} new`);
+          }
+        }
+      } catch {}
+    }
+
+    // 6. Check for recent errors in common log locations
     try {
-      const since = new Date(Date.now() - 3600000).toISOString();
-      const commits = execSync(`git log --since="${since}" --format="%B" 2>/dev/null`, { encoding: "utf8" }).trim();
-      if (commits && commits.length > 10) {
+      const nextLog = safeExec(
+        process.platform === "win32"
+          ? `powershell -Command "if(Test-Path '.next/server/app-paths-manifest.json'){Get-Content '.next/trace' -Tail 20 2>$null}"`
+          : `tail -20 .next/trace 2>/dev/null`
+      );
+      if (nextLog && /error/i.test(nextLog)) {
         const res = await httpFetch(`${url}/api/memories/auto`, {
           method: "POST",
-          body: JSON.stringify({ text: commits, source_type: "git-hook", project }),
+          body: JSON.stringify({ text: nextLog, source_type: "terminal", project }),
         });
-        if (res.ok) captured.push(`git: ${res.json.saved || 0} new`);
+        if (res.ok) captured.push(`errors: ${res.json.saved || 0} new`);
       }
     } catch {}
 
-    // 2. Recent git diff (what changed)
-    try {
-      const diff = execSync("git diff --stat HEAD~3 2>/dev/null", { encoding: "utf8" }).trim();
-      if (diff && diff.length > 10) {
-        const res = await httpFetch(`${url}/api/memories/auto`, {
-          method: "POST",
-          body: JSON.stringify({ text: diff, source_type: "git-diff", project }),
-        });
-        if (res.ok) captured.push(`diff: ${res.json.saved || 0} new`);
-      }
-    } catch {}
+    // 7. Check if package.json changed (dependency changes are important context)
+    if (inGitRepo) {
+      try {
+        const pkgDiff = gitExec("git diff HEAD~3 -- package.json");
+        if (pkgDiff && pkgDiff.length > 20) {
+          const addedDeps = [...pkgDiff.matchAll(/^\+\s*"([\w@/.-]+)":\s*"([^"]+)"/gm)].map((m) => `${m[1]}@${m[2]}`);
+          const removedDeps = [...pkgDiff.matchAll(/^-\s*"([\w@/.-]+)":\s*"([^"]+)"/gm)].map((m) => m[1]);
+          if (addedDeps.length > 0 || removedDeps.length > 0) {
+            const depText = [
+              addedDeps.length > 0 ? `Added: ${addedDeps.join(", ")}` : null,
+              removedDeps.length > 0 ? `Removed: ${removedDeps.join(", ")}` : null,
+            ].filter(Boolean).join("\n");
+            const res = await httpFetch(`${url}/api/memories/auto`, {
+              method: "POST",
+              body: JSON.stringify({ text: `Dependency changes:\n${depText}`, source_type: "deps", project }),
+            });
+            if (res.ok) captured.push(`deps: ${res.json.saved || 0} new`);
+            sessionParts.push(`Dependencies: ${addedDeps.length} added, ${removedDeps.length} removed`);
+          }
+        }
+      } catch {}
+    }
 
-    // 3. Check for uncommitted changes (context)
-    try {
-      const status = execSync("git status --short 2>/dev/null", { encoding: "utf8" }).trim();
-      if (status && status.split("\n").length > 0) {
-        const files = status.split("\n").map((l) => l.trim()).filter(Boolean);
-        const text = `Session ended with ${files.length} uncommitted changes:\n${files.slice(0, 15).join("\n")}`;
-        const res = await httpFetch(`${url}/api/memories/auto`, {
-          method: "POST",
-          body: JSON.stringify({ text, source_type: "git-diff", project }),
-        });
-        if (res.ok) captured.push(`uncommitted: ${res.json.saved || 0} new`);
-      }
-    } catch {}
+    // 8. Build and save rich session summary
+    const summaryContent = [
+      `Session ended: ${source} worked on ${project || "unknown"}`,
+      sessionParts.length > 0 ? sessionParts.join("\n") : null,
+      captured.length > 0 ? `Auto-captured: ${captured.join(", ")}` : null,
+    ].filter(Boolean).join("\n\n");
 
-    // 4. Log the session end
     try {
       await httpFetch(`${url}/api/memories`, {
         method: "POST",
         body: JSON.stringify({
-          content: `Session ended: ${source} worked on ${project || "unknown"} — ${captured.join(", ") || "no new captures"}`,
+          content: summaryContent,
           source,
           type: "context",
           project: project || "",
@@ -609,22 +794,121 @@ async function cmdSession(args) {
     if (captured.length > 0) {
       ok(`Captured: ${captured.join(", ")}`);
     } else {
-      ok("No new learnings to capture");
+      ok("No new learnings to capture (agent should use export_session for rich context)");
+    }
+    if (sessionParts.length > 0) {
+      for (const part of sessionParts.slice(0, 5)) {
+        console.log(`  ${C.dim}${part}${C.reset}`);
+      }
     }
     console.log();
   } else {
-    err('Usage: syncmind session <start|end> [--project name]');
+    err('Usage: syncmind session <start|end> [--project name] [--source ide]');
   }
 }
+
+// ── Exit Gate instruction content ────────────────────────────────────
+const EXIT_GATE_INSTRUCTION = `# SyncMind — Shared Memory (MANDATORY RULES)
+
+You have access to SyncMind shared memory via MCP tools. These rules are NON-NEGOTIABLE.
+
+## On Session Start
+1. Call \`read_memories\` with the project name to check what other agents have learned.
+2. Use \`bump_memory\` on any memory you actively use in your work.
+
+## During Work
+When you discover something worth sharing, call \`write_memory\` with RICH context:
+- BAD: "Fixed CORS error" — useless, no one can learn from this
+- GOOD: "Fixed CORS error in /api/auth — root cause was missing OPTIONS handler in route.ts. The browser sends a preflight OPTIONS request for cross-origin POST, and Next.js Route Handlers don't handle OPTIONS by default. Added explicit OPTIONS export."
+
+## BEFORE SESSION ENDS (EXIT GATE — DO NOT SKIP)
+You MUST call \`export_session\` before finishing. This is your handoff to the next agent.
+
+Fill ALL applicable fields with DETAILED content:
+- **summary**: "I implemented X because Y. The approach was Z. Key challenge was W." (not "did stuff")
+- **decisions**: "Chose JWT over sessions because app is stateless across 3 regions" (not "used JWT")
+- **bugs**: "CORS failed because OPTIONS handler was missing — browsers send preflight for cross-origin POST" (not "fixed CORS")
+- **patterns**: "Use fire-and-forget async UPDATE for read tracking to avoid blocking response" (not "async update")
+- **learnings**: "On Windows, Claude Code hooks run in cmd.exe not bash — use node -e wrapper for cross-platform"
+- **files_touched**: "app/api/auth/route.ts (added OPTIONS handler + JWT validation middleware)"
+- **next_steps**: "Rate limiting still needed on /api/auth — currently unlimited, could be abused"
+
+The next agent ONLY knows what you export. If you skip this or write thin content, the next agent starts from zero.
+`;
 
 // ── hooks (setup auto-capture hooks in IDE configs) ─────────────────
 async function cmdHooks(args) {
   const url = detectUrl();
   console.log();
-  console.log(`  ${C.bold}${C.magenta}Sync${C.cyan}Mind${C.reset} ${C.dim}Auto-Capture Hooks${C.reset}`);
+  console.log(`  ${C.bold}${C.magenta}Sync${C.cyan}Mind${C.reset} ${C.dim}Auto-Capture Hooks + Exit Gate${C.reset}`);
   console.log();
 
-  // 1. Claude Code hooks (settings.json)
+  // ── 1. Install agent instructions (the EXIT GATE) ──────────────────
+  log("Installing Exit Gate instructions for AI agents...");
+
+  // Claude Code — CLAUDE.md in project root
+  const claudeMdPath = path.join(process.cwd(), "CLAUDE.md");
+  const claudeMdExisting = fs.existsSync(claudeMdPath) ? fs.readFileSync(claudeMdPath, "utf8") : "";
+  if (!claudeMdExisting.includes("SyncMind")) {
+    const content = claudeMdExisting
+      ? claudeMdExisting + "\n\n" + EXIT_GATE_INSTRUCTION
+      : EXIT_GATE_INSTRUCTION;
+    fs.writeFileSync(claudeMdPath, content);
+    ok("Added Exit Gate to CLAUDE.md (Claude Code reads this automatically)");
+  } else {
+    // Update the existing SyncMind section
+    const updated = claudeMdExisting.replace(
+      /# SyncMind[\s\S]*?(?=\n# [^S]|\n# $|$)/,
+      EXIT_GATE_INSTRUCTION.trim()
+    );
+    if (updated !== claudeMdExisting) {
+      fs.writeFileSync(claudeMdPath, updated);
+      ok("Updated Exit Gate in CLAUDE.md");
+    } else {
+      ok("CLAUDE.md already has SyncMind instructions");
+    }
+  }
+
+  // Cursor — .cursor/rules/syncmind.mdc
+  const cursorRulesDir = path.join(process.cwd(), ".cursor", "rules");
+  if (!fs.existsSync(cursorRulesDir)) fs.mkdirSync(cursorRulesDir, { recursive: true });
+  const cursorRulePath = path.join(cursorRulesDir, "syncmind.mdc");
+  fs.writeFileSync(cursorRulePath, `---
+description: SyncMind shared memory — exit gate rules
+globs: "**/*"
+alwaysApply: true
+---
+
+${EXIT_GATE_INSTRUCTION}`);
+  ok("Added Exit Gate to .cursor/rules/syncmind.mdc");
+
+  // Codex — codex.md (OpenAI Codex reads AGENTS.md or codex.md)
+  const codexMdPath = path.join(process.cwd(), "AGENTS.md");
+  const codexExisting = fs.existsSync(codexMdPath) ? fs.readFileSync(codexMdPath, "utf8") : "";
+  if (!codexExisting.includes("SyncMind")) {
+    const content = codexExisting
+      ? codexExisting + "\n\n" + EXIT_GATE_INSTRUCTION
+      : EXIT_GATE_INSTRUCTION;
+    fs.writeFileSync(codexMdPath, content);
+    ok("Added Exit Gate to AGENTS.md (Codex reads this automatically)");
+  } else {
+    ok("AGENTS.md already has SyncMind instructions");
+  }
+
+  // Windsurf — .windsurfrules
+  const windsurfPath = path.join(process.cwd(), ".windsurfrules");
+  const windsurfExisting = fs.existsSync(windsurfPath) ? fs.readFileSync(windsurfPath, "utf8") : "";
+  if (!windsurfExisting.includes("SyncMind")) {
+    const content = windsurfExisting
+      ? windsurfExisting + "\n\n" + EXIT_GATE_INSTRUCTION
+      : EXIT_GATE_INSTRUCTION;
+    fs.writeFileSync(windsurfPath, content);
+    ok("Added Exit Gate to .windsurfrules (Windsurf reads this automatically)");
+  } else {
+    ok(".windsurfrules already has SyncMind instructions");
+  }
+
+  // ── 2. Claude Code hooks (settings.json) ───────────────────────────
   if (hasBin("claude")) {
     log("Setting up Claude Code hooks...");
 
@@ -634,28 +918,43 @@ async function cmdHooks(args) {
 
     settings.hooks = settings.hooks || {};
 
-    // Stop hook — fires when Claude Code session ends
+    // Remove old broken Stop hooks that use bash syntax on Windows
+    if (settings.hooks.Stop) {
+      settings.hooks.Stop = settings.hooks.Stop.filter((h) =>
+        !h.hooks?.some((hh) => hh.command?.includes("syncmind session end"))
+      );
+    }
+
+    // Stop hook — uses node for cross-platform compat (works on Windows + Mac + Linux)
+    // Detects project from git toplevel or cwd, detects source from env vars, passes both as flags
     settings.hooks.Stop = settings.hooks.Stop || [];
+    const stopHookCmd = `node -e "const{execSync}=require('child_process'),p=require('path');let proj='',src='cli';try{proj=p.basename(execSync('git rev-parse --show-toplevel',{encoding:'utf8',stdio:['pipe','pipe','pipe']}).trim())}catch{try{proj=p.basename(process.cwd())}catch{}};if(process.env.CURSOR_TRACE_ID)src='cursor';else if(process.env.CODEX_ENV)src='codex';else if(process.env.TERM_PROGRAM==='vscode')src='vscode';else if(process.env.CLAUDE_CODE||process.env.TERM_PROGRAM==='Claude')src='claude-code';try{execSync('syncmind session end --project '+(proj||'unknown')+' --source '+src,{stdio:'ignore',timeout:10000})}catch{}"`;
     const stopHook = {
       matcher: "",
       hooks: [{
         type: "command",
-        command: `syncmind session end --project "$(basename $(git rev-parse --show-toplevel 2>/dev/null || echo unknown))"`,
+        command: stopHookCmd,
       }],
     };
 
-    // Check if we already added our hook
     const hasStop = settings.hooks.Stop.some((h) =>
       h.hooks?.some((hh) => hh.command?.includes("syncmind session end"))
     );
     if (!hasStop) {
       settings.hooks.Stop.push(stopHook);
-      ok("Added Stop hook (auto-capture on session end)");
+      ok("Added Stop hook (cross-platform, backup git capture on exit)");
     } else {
       ok("Stop hook already configured");
     }
 
-    // PreToolUse hook — capture after git commits
+    // Remove old PreToolUse hooks for syncmind capture
+    if (settings.hooks.PreToolUse) {
+      settings.hooks.PreToolUse = settings.hooks.PreToolUse.filter((h) =>
+        !h.hooks?.some((hh) => hh.command?.includes("syncmind capture"))
+      );
+    }
+
+    // PreToolUse hook — capture after git commits (cross-platform node command)
     settings.hooks.PreToolUse = settings.hooks.PreToolUse || [];
     const commitHook = {
       matcher: "Bash",
@@ -678,7 +977,7 @@ async function cmdHooks(args) {
     ok(`Updated ${settingsPath}`);
   }
 
-  // 2. Git hooks
+  // ── 3. Git hooks ───────────────────────────────────────────────────
   log("Setting up git hooks...");
   const gitDir = path.join(process.cwd(), ".git");
   if (fs.existsSync(gitDir)) {
@@ -691,11 +990,9 @@ async function cmdHooks(args) {
 # SyncMind auto-capture: extract learnings from commits
 syncmind capture --type git-hook 2>/dev/null &
 `;
-    // Only write if not already present
     const existing = fs.existsSync(postCommitPath) ? fs.readFileSync(postCommitPath, "utf8") : "";
     if (!existing.includes("syncmind")) {
       if (existing) {
-        // Append to existing hook
         fs.appendFileSync(postCommitPath, "\n" + postCommitContent);
       } else {
         fs.writeFileSync(postCommitPath, postCommitContent);
@@ -706,7 +1003,7 @@ syncmind capture --type git-hook 2>/dev/null &
       ok("post-commit hook already has syncmind");
     }
 
-    // pre-push hook — capture test/lint results before pushing
+    // pre-push hook
     const prePushPath = path.join(hooksDir, "pre-push");
     const prePushContent = `#!/bin/sh
 # SyncMind auto-capture: snapshot state before push
@@ -728,23 +1025,25 @@ syncmind session end 2>/dev/null &
     warn("Not a git repo — skipping git hooks");
   }
 
-  // 3. Show manual setup for other IDEs
+  // ── 4. Show manual setup ───────────────────────────────────────────
   console.log();
-  log(`${C.bold}Manual setup for other IDEs:${C.reset}`);
+  log(`${C.bold}Manual setup for terminals:${C.reset}`);
   console.log();
-  console.log(`  ${C.dim}Cursor — add to .cursor/rules:${C.reset}`);
-  console.log(`    ${C.cyan}On session end, run: syncmind session end${C.reset}`);
+  console.log(`  ${C.dim}Add to .bashrc / .zshrc:${C.reset}`);
+  console.log(`    ${C.cyan}trap 'syncmind session end 2>/dev/null' EXIT${C.reset}`);
   console.log();
   console.log(`  ${C.dim}VS Code — tasks.json:${C.reset}`);
   console.log(`    ${C.cyan}{ "label": "syncmind-capture", "type": "shell",${C.reset}`);
   console.log(`    ${C.cyan}  "command": "syncmind session end",${C.reset}`);
   console.log(`    ${C.cyan}  "runOptions": { "runOn": "folderClose" } }${C.reset}`);
   console.log();
-  console.log(`  ${C.dim}Any terminal — add to .bashrc / .zshrc:${C.reset}`);
-  console.log(`    ${C.cyan}trap 'syncmind session end 2>/dev/null' EXIT${C.reset}`);
+
+  console.log(`  ${C.bold}${C.green}Exit Gate installed!${C.reset}`);
+  console.log(`  ${C.dim}Every AI agent will now be instructed to export full context${C.reset}`);
+  console.log(`  ${C.dim}before ending their session. No more thin one-liner memories.${C.reset}`);
   console.log();
 
-  ok("Hooks setup complete");
+  ok("Hooks + Exit Gate setup complete");
   console.log();
 }
 
@@ -844,13 +1143,13 @@ function printDone(url) {
 
 function printHelp() {
   console.log(`
-  ${C.bold}${C.magenta}Sync${C.cyan}Mind${C.reset} ${C.dim}CLI v2.0${C.reset}
+  ${C.bold}${C.magenta}Sync${C.cyan}Mind${C.reset} ${C.dim}CLI v2.1${C.reset}
 
   ${C.bold}Setup & Config${C.reset}
     syncmind install              Install MCP server into your IDE (interactive)
     syncmind install --tool all   Install for all IDEs at once
     syncmind install --url URL    Use a custom SyncMind URL
-    syncmind hooks                Set up auto-capture hooks (git, IDE, terminal)
+    syncmind hooks                ${C.green}Install Exit Gate${C.reset} + auto-capture hooks for all IDEs
     syncmind status               Check server & MCP connection status
 
   ${C.bold}Memory Management${C.reset}
@@ -877,6 +1176,16 @@ function printHelp() {
     syncmind restart --dev        Also restart the Next.js dev server
     syncmind pull                 Git pull + reinstall + re-link
     syncmind pull --restart       Also restart after pull
+
+  ${C.bold}${C.green}Exit Gate${C.reset} ${C.dim}(the key feature)${C.reset}
+    Run ${C.bold}syncmind hooks${C.reset} to install the Exit Gate into your project.
+    This adds instructions to CLAUDE.md, .cursor/rules, AGENTS.md, and
+    .windsurfrules that tell every AI agent:
+
+      ${C.cyan}"Before ending your session, call export_session with your${C.reset}
+      ${C.cyan} FULL context — what you did, why, bugs, patterns, next steps."${C.reset}
+
+    The agent's own knowledge becomes shared memory. No more thin captures.
 
   ${C.dim}URL auto-detected from SYNCMIND_URL env, .env.local, or .mcp.json
   Project auto-detected from git remote or directory name${C.reset}
